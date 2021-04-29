@@ -112,7 +112,7 @@ def lesion_id(path):
     return "{}-{}-{}-{}".format(path_chunks[1], path_chunks[2], path_chunks[3], path_chunks[5].rstrip(".csv"))
 
 
-def get_mm_lesion_files(data_path, modality="PET"):
+def get_mm_lesion_files(data_path, modality=None):
     """Take project data path and return a list with all lesion paths"""
     mm_files = []
     for pat_id in os.listdir(data_path):
@@ -125,7 +125,17 @@ def get_mm_lesion_files(data_path, modality="PET"):
                     voi_path = os.path.join(lesion_path, "Dilated")
                     for mm_file in os.listdir(voi_path):
                         if mm_file.endswith(".csv"):
-                            mm_files.append(os.path.join(voi_path, mm_file))
+                            if modality is None:
+                                mm_files.append(os.path.join(voi_path, mm_file))
+                            elif modality == "PET":
+                                if mm_file == "PET.csv":
+                                    mm_files.append(os.path.join(voi_path, mm_file))
+                            elif modality == "CT":
+                                if mm_file == "CT.csv":
+                                    mm_files.append(os.path.join(voi_path, mm_file))
+                            elif modality == "MRI.csv":
+                                if mm_file == "MRI.csv":
+                                    mm_files.append(os.path.join(voi_path, mm_file))
 
     return mm_files
 
