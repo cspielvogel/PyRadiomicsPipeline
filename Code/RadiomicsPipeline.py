@@ -95,12 +95,28 @@ def mm_to_npy(input_path, shift_negatives=1024):
     return npy
 
 
-def mask_from_mm_npy(npy, threshold=0, shift_negative=True):
+def bck_normalization(npy, lesion_path):
+    """
+    Takes a numpy array to be normalized and its path as input and returns the normalized numpy array.
+    Normalization is conducted using the mean voxel value of the Background area in the Bck folder of the same scan as
+    the lesion
+    """
+
+    # Derive background path from lesion path
+    stem = "/".join(lesion_path.split("/")[:-3])
+    bck_path = os.path.join(stem, "Bck/PET.csv")
+
+    # Get background lesion
+    bck = mm_to_npy(bck_path).astype(int)
+
+    # Return numpy array normalized with mean of background
+    return np.round(npy / np.mean(bck))
+
+
+def mask_from_mm_npy(npy, threshold=0):
     """
     Take a NPY array derived from a mm coordinate file and create a mask from it.
     The VOI will contain any voxel with a value larger than the given threshold value.
-    If shift_positive is true, all values in the array will be increased by 1024 if there is a negative value in the
-    array. This is ment to shift the value range to positive values only in the case of Hounsfield scaling in CT.
     """
     return (npy > threshold) * 1
 
@@ -109,10 +125,22 @@ def lesion_id(path):
     """Takes mm coordinate file path as input and returns patient ID, scan number and lesion number"""
     path_chunks = path.split("/Data")[2].split("/")
 
-    return "{}-{}-{}-{}".format(path_chunks[1], path_chunks[2], path_chunks[3], path_chunks[5].rstrip(".csv"))
+    # Check whether lesion (length 5) or background (length 4)
+    if len(path_chunks) > 5:
+        path_id = "{}-{}-{}-{}-{}".format(path_chunks[1],
+                                          path_chunks[2],
+                                          path_chunks[3],
+                                          path_chunks[4],
+                                          path_chunks[5].rstrip(".csv"))
+    else:
+        path_id = "{}-{}-{}-{}".format(path_chunks[1],
+                                          path_chunks[2],
+                                          path_chunks[3],
+                                          path_chunks[4].rstrip(".csv"))
+    return path_id
 
 
-def get_mm_lesion_files(data_path, modality=None):
+def get_mm_lesion_files(data_path, modality=None, get_bck=False):
     """Take project data path and return a list with all lesion paths"""
     mm_files = []
     for pat_id in os.listdir(data_path):
@@ -120,6 +148,8 @@ def get_mm_lesion_files(data_path, modality=None):
         for scan in os.listdir(patient_path):
             scan_path = os.path.join(patient_path, scan)
             for lesion in os.listdir(scan_path):
+
+                # Get individual lesion folders
                 if lesion.startswith("Lesion-") and not lesion.startswith("Lesion-Merged"):
                     lesion_path = os.path.join(scan_path, lesion)
                     voi_path = os.path.join(lesion_path, "Dilated")
@@ -136,6 +166,11 @@ def get_mm_lesion_files(data_path, modality=None):
                             elif modality == "MRI.csv":
                                 if mm_file == "MRI.csv":
                                     mm_files.append(os.path.join(voi_path, mm_file))
+
+                # Get background folder
+                if get_bck is True and lesion == "Bck":
+                    bck_path = os.path.join(scan_path, lesion)
+                    mm_files.append(os.path.join(bck_path, "PET.csv"))
 
     return mm_files
 
@@ -159,36 +194,6 @@ def main():
     #             "/media/3atf_storage/3ATF/Clemens/Data/HNSCC_AUT/Data/003/Scan-1/Lesion-0/Dilated/CT.csv",
     #             "/media/3atf_storage/3ATF/Clemens/Data/HNSCC_AUT/Data/003/Scan-1/Lesion-0/Dilated/PET.csv"]
 
-    # Create mask for mm coordinate files and save image and mask as NRRD files for each lesion
-    images = []
-    masks = []
-    ids = []
-    for lesion_path in mm_paths:
-
-        # Create unique lesion ID
-        current_lesion_id = lesion_id(lesion_path)
-        ids.append(current_lesion_id)
-
-        # Convert mm coordinate files to NRRD
-        npy = mm_to_npy(lesion_path)
-        img_path = "/home/cspielvogel/PycharmProjects/RadiomicsPipeline/Data/{}-image.nrrd".format(current_lesion_id)
-        npy_to_nrrd(npy, img_path)
-        images.append(img_path)
-
-        # Create masks for npy files
-        mask = mask_from_mm_npy(npy)
-        mask_path = "/home/cspielvogel/PycharmProjects/RadiomicsPipeline/Data/{}-mask.nrrd".format(current_lesion_id)
-        npy_to_nrrd(mask, mask_path)
-        masks.append(mask_path)
-
-    # Create NRRD data table
-    samples = pd.DataFrame()
-    samples["Image"] = images
-    samples["Mask"] = masks
-    samples.index.name = "PAT.-ID"
-    samples.index = ids
-    samples.to_csv(sample_list_path, sep=";")
-
     # Configure logging
     r_logger = logging.getLogger("radiomics")
 
@@ -202,6 +207,46 @@ def main():
 
     # Set verbosity level for output to stderr (default level = WARNING)
     radiomics.setVerbosity(logging.INFO)
+
+    # Create mask for mm coordinate files and save image and mask as NRRD files for each lesion
+    images = []
+    masks = []
+    ids = []
+    num_paths = len(mm_paths)
+    for index, lesion_path in enumerate(mm_paths):
+
+        # Create unique lesion ID
+        current_lesion_id = lesion_id(lesion_path)
+        ids.append(current_lesion_id)
+
+        # Convert mm coordinate files to numpy arrays
+        npy = mm_to_npy(lesion_path)
+
+        # Perform background normalization for PET data to get TBR from bq/ml
+        if "/PET.csv" in lesion_path:
+            npy = bck_normalization(npy, lesion_path)
+
+        # Convert numpy arrays to NRRD
+        img_path = "/home/cspielvogel/PycharmProjects/RadiomicsPipeline/Data/{}-image.nrrd".format(current_lesion_id)
+        npy_to_nrrd(npy, img_path)
+        images.append(img_path)
+
+        # Create masks for numpy files
+        mask = mask_from_mm_npy(npy)
+        mask_path = "/home/cspielvogel/PycharmProjects/RadiomicsPipeline/Data/{}-mask.nrrd".format(current_lesion_id)
+        npy_to_nrrd(mask, mask_path)
+        masks.append(mask_path)
+
+        # Display logging info
+        logger.info("Loading mm file, normalization and mask creation completed for {}/{}".format(index+1, num_paths))
+
+    # Create NRRD data table
+    samples = pd.DataFrame()
+    samples["Image"] = images
+    samples["Mask"] = masks
+    samples.index.name = "PAT.-ID"
+    samples.index = ids
+    samples.to_csv(sample_list_path, sep=";")
 
     logger.info("pyradiomics version: %s", radiomics.__version__)
     logger.info("Loading CSV")
