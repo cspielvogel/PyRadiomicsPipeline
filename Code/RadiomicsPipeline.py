@@ -195,7 +195,7 @@ def main():
     param_path = "/home/cspielvogel/PycharmProjects/RadiomicsPipeline/Settings/Params.yaml"
 
     # Get all mm coordinate files
-    mm_paths = get_mm_lesion_files(data_path)[:10]
+    mm_paths = get_mm_lesion_files(data_path)
     # mm_paths = ["/media/3atf_storage/3ATF/Clemens/Data/HNSCC_AUT/Data/001/Scan-0/Lesion-0/Dilated/CT.csv",
     #             "/media/3atf_storage/3ATF/Clemens/Data/HNSCC_AUT/Data/001/Scan-0/Lesion-0/Dilated/PET.csv",
     #             "/media/3atf_storage/3ATF/Clemens/Data/HNSCC_AUT/Data/003/Scan-1/Lesion-0/Dilated/CT.csv",
@@ -259,7 +259,6 @@ def main():
         masks.append(mask_path)
 
         # Display logging info
-        print(lesion_path)
         logger.info("Loading mm file, normalization and mask creation completed for {}/{}".format(index+1, num_paths))
 
     # Create NRRD data table
