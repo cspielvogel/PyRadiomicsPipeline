@@ -20,6 +20,7 @@ import time
 import pandas as pd
 import numpy as np
 import SimpleITK as sitk
+from scipy.ndimage.interpolation import zoom
 
 import radiomics
 from radiomics import featureextractor
@@ -47,12 +48,9 @@ def npy_to_nrrd(npy, output_path):
     nrrd.write(output_path, npy)
 
 
-def mm_to_npy(input_path, shift_negatives=1024):
+def mm_to_npy(input_path):
     """
     Load mm coordinate file from input path and convert to numpy array.
-    if shift_negatives is not zero, all array values will be increased by the given number if any value in the array
-    is less than zero. This is targeted towards shifting the value range of Hounsfield units in CT to a positive
-    range.
     """
 
     # Check if file is a merged-lesion file (due to its different formatting)
@@ -87,11 +85,6 @@ def mm_to_npy(input_path, shift_negatives=1024):
         voxel = index_table.iloc[voxel_idx]
         npy[int(voxel.x), int(voxel.y), int(voxel.z)] = voxel.value
 
-    # Shift values to a positive scale if any value is negative
-    min_value = np.min(npy)
-    if min_value < 0:
-        npy = npy + shift_negatives
-
     return npy
 
 
@@ -107,17 +100,26 @@ def bck_normalization(npy, lesion_path):
     bck_path = os.path.join(stem, "Bck/PET.csv")
 
     # Get background lesion
-    bck = mm_to_npy(bck_path).astype(int)
+    bck = mm_to_npy(bck_path)
 
     # Return numpy array normalized with mean of background
-    return np.round(npy / np.mean(bck))
+    return np.round((npy / np.mean(bck)) * 1000).astype(int)
 
 
-def mask_from_mm_npy(npy, threshold=0):
+def mask_from_mm_npy(npy, threshold="mode"):
     """
     Take a NPY array derived from a mm coordinate file and create a mask from it.
     The VOI will contain any voxel with a value larger than the given threshold value.
+    If the threshold value is "min", the threshold will automatically be set to the lowest value in the numpy array
+    If the threshold is "mode", only the values with exactly the most common value will be excluded from the mask
     """
+    if threshold == "min":
+        threshold = np.min(npy)
+    elif threshold == "mode":
+        value, count = np.unique(npy, return_counts=True)
+        threshold = value[np.argmax(count)]
+        return (npy != threshold) * 1
+
     return (npy > threshold) * 1
 
 
@@ -134,9 +136,9 @@ def lesion_id(path):
                                           path_chunks[5].rstrip(".csv"))
     else:
         path_id = "{}-{}-{}-{}".format(path_chunks[1],
-                                          path_chunks[2],
-                                          path_chunks[3],
-                                          path_chunks[4].rstrip(".csv"))
+                                       path_chunks[2],
+                                       path_chunks[3],
+                                       path_chunks[4].rstrip(".csv"))
     return path_id
 
 
@@ -152,7 +154,7 @@ def get_mm_lesion_files(data_path, modality=None, get_bck=False):
                 # Get individual lesion folders
                 if lesion.startswith("Lesion-") and not lesion.startswith("Lesion-Merged"):
                     lesion_path = os.path.join(scan_path, lesion)
-                    voi_path = os.path.join(lesion_path, "Dilated")
+                    voi_path = os.path.join(lesion_path, "Dilated")     # Replace VOIs to Dilated for adding
                     for mm_file in os.listdir(voi_path):
                         if mm_file.endswith(".csv"):
                             if modality is None:
@@ -175,6 +177,11 @@ def get_mm_lesion_files(data_path, modality=None, get_bck=False):
     return mm_files
 
 
+def shift_range(npy, by=1024):
+    """Add value specified by the by-parameter to all voxels in the numpy array"""
+    return npy + by
+
+
 def main():
     start = time.time()
 
@@ -188,7 +195,7 @@ def main():
     param_path = "/home/cspielvogel/PycharmProjects/RadiomicsPipeline/Settings/Params.yaml"
 
     # Get all mm coordinate files
-    mm_paths = get_mm_lesion_files(data_path)
+    mm_paths = get_mm_lesion_files(data_path)[:10]
     # mm_paths = ["/media/3atf_storage/3ATF/Clemens/Data/HNSCC_AUT/Data/001/Scan-0/Lesion-0/Dilated/CT.csv",
     #             "/media/3atf_storage/3ATF/Clemens/Data/HNSCC_AUT/Data/001/Scan-0/Lesion-0/Dilated/PET.csv",
     #             "/media/3atf_storage/3ATF/Clemens/Data/HNSCC_AUT/Data/003/Scan-1/Lesion-0/Dilated/CT.csv",
@@ -222,22 +229,37 @@ def main():
         # Convert mm coordinate files to numpy arrays
         npy = mm_to_npy(lesion_path)
 
+        # Shift Housfield units to be positive
+        if lesion_path.endswith("/CT.csv"):
+            npy = shift_range(npy, by=1024)
+
         # Perform background normalization for PET data to get TBR from bq/ml
         if "/PET.csv" in lesion_path:
             npy = bck_normalization(npy, lesion_path)
 
-        # Convert numpy arrays to NRRD
+        # Save numpy arrays to NRRD files
         img_path = "/home/cspielvogel/PycharmProjects/RadiomicsPipeline/Data/{}-image.nrrd".format(current_lesion_id)
         npy_to_nrrd(npy, img_path)
         images.append(img_path)
 
-        # Create masks for numpy files
-        mask = mask_from_mm_npy(npy)
+        # Create masks
+        if "/PET.csv" in lesion_path:   # For PET
+            mask = mask_from_mm_npy(npy, threshold=0)
+        else:
+            mask = mask_from_mm_npy(npy, threshold="mode")
+
+            # # For CT, by interpolating PET mask
+            # pet_path = lesion_path.replace("/PET.csv", "/CT.csv")
+            # pet = mm_to_npy(pet_path)
+            # pet_mask = mask_from_mm_npy(npy)
+            # mask_slices_interpolated = [zoom(pet_mask[:, :, i], 3) for i in np.arange(pet_mask.shape[2])]
+            # np.dstack(mask_slices_interpolated)
         mask_path = "/home/cspielvogel/PycharmProjects/RadiomicsPipeline/Data/{}-mask.nrrd".format(current_lesion_id)
         npy_to_nrrd(mask, mask_path)
         masks.append(mask_path)
 
         # Display logging info
+        print(lesion_path)
         logger.info("Loading mm file, normalization and mask creation completed for {}/{}".format(index+1, num_paths))
 
     # Create NRRD data table
